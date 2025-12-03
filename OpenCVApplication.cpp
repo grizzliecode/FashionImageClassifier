@@ -534,56 +534,235 @@ void histEqualization(Mat& img) {
 	}
 }
 
-void fashionImageClassification() {
-	char train_path[] = "fashion-mnist_train.csv";
-	char test_path[] = "fashion-mnist_test.csv";
+void HOG(Mat src, Mat features, int poz, int featureStart, int hogSize) {
+	const int SobelX[3][3] = { {-1,0,1},{-2,0,2},{-1,0,1}};
+	const int SobelY[3][3] = { {1,2,1},{0,0,0},{-1,-2,-1} };
+	const float epsilon = 0.001;
+	float hog[10] = { 0 };
+	const float scaleFactor = 400.0f;
+	int k = 1;
+	for (int i = k; i < src.rows - k;i++) {
+		for (int j = k; j < src.cols - k; j++) {
+			float gx = 0, gy=0;
+
+			for (int a = 0; a < 3;a++) {
+				for (int b = 0; b < 3; b++) {
+					gx += (SobelX[a][b] * (int) src.at<uchar>(i-k + a,j-k+b));
+					gy += (SobelY[a][b] * (int) src.at<uchar>(i-k + a,j-k+b));
+				}
+			}
+			float mag = sqrt(gx * gx + gy * gy);
+			float angle = atan2(gy, gx) * 180 / PI;
+			if (angle < 0) {
+				angle += 180;
+			}
+			for (int a = 0;a < 10;a++) {
+				if (abs(a * 20 - angle) < epsilon) {
+					hog[a] += mag;
+					break;
+				}
+				if (abs(a * 20 - angle) < 20) {
+					hog[a] += (abs(a * 20 - angle) / 20 * mag);
+				}
+			}
+		}
+	}
+	float l2 = 0;
+	for (int i = 0; i < 10;i++) {
+		l2 += hog[i] * hog[i];
+	}
+	l2 = sqrt(l2);
+	for (int i = 0; i < 10; i++) {
+		hog[i] = hog[i] / (l2 + epsilon);
+	}
+	for (int i = 0; i < hogSize; i++) { 
+		features.at<int>(poz, featureStart + i) = (int)std::round(hog[i] * scaleFactor);
+	}
+}
+
+void fashionImageClassification(int mode) {
+	const char train_path[] = "fashion-mnist_train.csv";
+	const char test_path[] = "fashion-mnist_test.csv";
+	const char train_features_file[] = "train_features.yml";
+	const char test_features_file[] = "test_features.yml";
+
 	const int nrTrain = 60000;
 	const int nrTest = 10000;
 	const int nrClasses = 10;
 	const int imgSize = 28;
+	const int hogSize = 10;
+	const int neighborsNum = 31;
+	const int demoSize = 100;
+	std::vector<std::string> classes(nrClasses);
+	classes[0] = "Tshirt/top";
+	classes[1] = "Trouser";
+	classes[2] = "Pullover";
+	classes[3] = "Dress";
+	classes[4] = "Coat";
+	classes[5] = "Sandal";
+	classes[6] = "Shirt";
+	classes[7] = "Sneaker";
+	classes[8] = "Bag";
+	classes[9] = "Ankle Boot";
+
+	const int featureSize = 255;
+	const int kernelSize = 1;
+
 	std::vector<Mat> trainImages(nrTrain);
 	std::vector<int> trainLabel(nrTrain);
 	std::vector<Mat> testImages(nrTest);
 	std::vector<int> testLabel(nrTest);
-	std::ifstream trainIn(train_path);
-	std::ifstream testIn(test_path);
-	std::string line;
-	trainIn >> line; //ignore the text
-	int k = 0;
-	while (trainIn >> line) {
-		Mat a(imgSize, imgSize, CV_8UC1);
-		transformToMat(a, trainLabel, line, k, imgSize);
-		trainImages[k++] = a;
-		if (k % 500 == 0) {
-			std::cout << k << " images processed\n";
+
+	Mat features;
+	Mat testFeatures;
+
+	if (mode == 1) {
+		//MODE 1: Calculate and Save Features
+
+		std::ifstream trainIn(train_path);
+		std::string line;
+		trainIn >> line;
+		int k = 0;
+		while (trainIn >> line) {
+			Mat a(imgSize, imgSize, CV_8UC1);
+			transformToMat(a, trainLabel, line, k, imgSize);
+			trainImages[k++] = a;
+			if (k % 500 == 0) {
+				std::cout << k << " training images processed\n";
+			}
+			if (k >= nrTrain)
+				break;
 		}
-	}
-	for (int i = 0; i < nrTrain;i++) {
-		histEqualization(trainImages[i]);
-	}
-	showHistForMat(trainImages[0], "trainImage");
-	testIn >> line;
-	k = 0;
-	while (testIn >> line) {
-		Mat a(imgSize, imgSize, CV_8UC1);
-		transformToMat(a, testLabel, line, k, imgSize);
-		testImages[k++] = a;
-		if (k % 500 == 0) {
-			std::cout << k << " images processed\n";
+		for (int i = 0; i < nrTrain;i++) {
+			histEqualization(trainImages[i]);
 		}
+		showHistForMat(trainImages[0], "trainImage");
+
+		std::ifstream testIn(test_path);
+		testIn >> line;
+		k = 0;
+		while (testIn >> line) {
+			Mat a(imgSize, imgSize, CV_8UC1);
+			transformToMat(a, testLabel, line, k, imgSize);
+			testImages[k++] = a;
+			if (k % 500 == 0) {
+				std::cout << k << " test images processed\n";
+			}
+			if (k >= nrTest)
+				break;
+		}
+		imshow("first", testImages[0]);
+		for (int i = 0; i < nrTest;i++) {
+			histEqualization(testImages[i]);
+		}
+		showHistForMat(testImages[0], "testImage");
+
+		std::cout << "Calculating features...\n";
+		features = Mat(nrTrain, featureSize + hogSize, CV_32SC1);
+		for (int i = 0; i < nrTrain;i++) {
+			lbp(trainImages[i], features, i, kernelSize, featureSize);
+			HOG(trainImages[i], features, i, featureSize, hogSize);
+		}
+
+		testFeatures = Mat(nrTest, featureSize + hogSize, CV_32SC1);
+		for (int i = 0; i < nrTest; i++) {
+			lbp(testImages[i], testFeatures, i, kernelSize, featureSize);
+			HOG(testImages[i], testFeatures, i, featureSize, hogSize);
+		}
+
+		cv::FileStorage fs_train(train_features_file, cv::FileStorage::WRITE);
+		fs_train << "features" << features;
+		fs_train.release();
+		std::cout << "Training features saved to: " << train_features_file << "\n";
+
+		cv::FileStorage fs_test(test_features_file, cv::FileStorage::WRITE);
+		fs_test << "testFeatures" << testFeatures;
+		fs_test.release();
+		std::cout << "Test features saved to: " << test_features_file << "\n";
+
 	}
-	imshow("first", testImages[0]);
-	for (int i = 0; i < nrTest;i++) {
-		histEqualization(testImages[i]);  
+	else if (mode == 2) {
+		//MODE 2: Load Features and Classify
+
+		std::ifstream trainIn(train_path);
+		std::ofstream confussionOut("confussion.txt");
+		std::string line;
+		trainIn >> line;
+		int k = 0;
+		while (trainIn >> line && k < nrTrain) {
+			std::vector<std::string> parts = split(line);
+			if (!parts.empty()) {
+				trainLabel[k] = std::stoi(parts[0]);
+				k++;
+			}
+		}
+
+		std::ifstream testIn(test_path);
+		testIn >> line;
+		k = 0;
+		while (testIn >> line && k < nrTest) {
+			std::vector<std::string> parts = split(line);
+			if (!parts.empty()) {
+				testLabel[k] = std::stoi(parts[0]);
+				k++;
+			}
+		}
+
+		cv::FileStorage fs_train(train_features_file, cv::FileStorage::READ);
+		fs_train["features"] >> features;
+		fs_train.release();
+
+		cv::FileStorage fs_test(test_features_file, cv::FileStorage::READ);
+		fs_test["testFeatures"] >> testFeatures;
+		fs_test.release();
+
+		if (features.empty() || testFeatures.empty()) {
+			std::cerr << "ERROR: Could not load feature files. Run mode 1 first!\n";
+			return;
+		}
+		std::cout << "Features loaded successfully. Starting KNN classification...\n";
+
+		Mat confussionMat(nrClasses, nrClasses, CV_32SC1);
+		confussionMat.setTo(0);
+
+		for (int i = 0; i < demoSize;i++) {
+			std::vector<std::pair<float, int>> dist(nrTrain, { 0,0 });
+			std::cout << i << '\n';
+			for (int j = 0; j < nrTrain;j++) {
+				dist[j].first = 0;
+				dist[j].second = trainLabel[j];
+				for (int a = 0; a < featureSize + hogSize; a++) {
+					dist[j].first += (features.at<int>(j, a) - testFeatures.at<int>(i, a)) * (features.at<int>(j, a) - testFeatures.at<int>(i, a));
+				}
+				dist[j].first = sqrt(dist[j].first);
+			}
+			std::sort(dist.begin(), dist.end(), [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+				return a.first < b.first;
+				});
+			std::vector<int> c(nrClasses, 0);
+			for (int j = 0; j < neighborsNum;j++) {
+				c[dist[j].second]++;
+			}
+			int cl = -1, mx = -1;
+			for (int j = 0; j < nrClasses;j++) {
+				if (mx < c[j]) {
+					mx = c[j];
+					cl = j;
+				}
+			}
+			confussionMat.at<int>(testLabel[i], cl) = confussionMat.at<int>(testLabel[i], cl) + 1;
+		}
+
+		for (int i = 0;i < nrClasses;i++) {
+			for (int j = 0; j < nrClasses;j++) {
+				confussionOut << confussionMat.at<int>(i, j) << ' ';
+				std::cout << confussionMat.at<int>(i, j) << ' ';
+			}
+			confussionOut << '\n';
+			std::cout << '\n';
+		}
+		waitKey(5000);
 	}
-	showHistForMat(testImages[0], "testImage");
-	const int featureSize = 255;
-	const int kernelSize = 1;
-	Mat features(nrTrain, featureSize, CV_32SC1);
-	for (int i = 0; i < nrTrain;i++) {
-		lbp(trainImages[i], features, i, kernelSize, featureSize);
-	}
-	waitKey();
 }
 
 int main() 
@@ -651,9 +830,14 @@ int main()
 			case 12:
 				testMouseClick();
 				break;
-			case 13:
-				fashionImageClassification();
+			case 13: {
+				int k;
+				std::cout << "Introduce the mode(1 - Train, 2 - Classify)\n";
+				std::cin >> k;
+				fashionImageClassification(k);
 				break;
+			}
+
 		}
 	}
 	while (op!=0);
